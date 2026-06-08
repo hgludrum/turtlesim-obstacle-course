@@ -18,10 +18,15 @@ class Bot(Node):
         self.subscription = self.create_subscription(
             Pose, '/bot/pose', self.pose_callback, 10
         )
+
         self.pen_client = self.create_client(SetPen, '/bot/set_pen')
         self.pen_client.wait_for_service()
         pen_req = SetPen.Request()
         pen_req.off = 0
+        pen_req.r = 255
+        pen_req.g = 255
+        pen_req.b = 255
+        pen_req.width = 3
         self.pen_client.call_async(pen_req)
         
 
@@ -41,6 +46,10 @@ class Bot(Node):
         self.get_logger().info(
             f'Bot received goal ({self.goal_x:.2f}, {self.goal_y:.2f}) and {len(self.obstacles)} obstacles'
         )
+
+        self.orbiting = False
+        self.orbit_start_angle = None
+        self.orbit_obstacle = None 
 
 
     def pose_callback(self, msg: Pose):
@@ -63,28 +72,34 @@ class Bot(Node):
             distance_obs = math.sqrt(dx_obs * dx_obs + dy_obs * dy_obs)
 
             if distance_obs < closest_distance:
-                closest_distance = distance_obs
                 closest_obstacle = obstacle
+                closest_distance = distance_obs
 
-        if closest_obstacle is not None and closest_distance < closest_obstacle[2] + 0.75:
-            dx_obs = msg.x - closest_obstacle[0]
-            dy_obs = msg.y - closest_obstacle[1]
-            angle_to_obstacle = math.atan2(dy_obs, dx_obs)
-            angle_away_from_obstacle = angle_to_obstacle + math.pi
-            angle_error = math.atan2(
-                math.sin(angle_away_from_obstacle - msg.theta),
-                math.cos(angle_away_from_obstacle - msg.theta),
+        if self.orbiting and self.orbit_obstacle is not None and self.orbit_start_angle is not None and closest_obstacle is not None:
+            goal_dot = (
+                (msg.x - self.orbit_obstacle[0]) * (self.goal_x - self.orbit_obstacle[0]) +
+                (msg.y - self.orbit_obstacle[1]) * (self.goal_y - self.orbit_obstacle[1])
             )
+            current_angle = math.atan2(msg.y - self.orbit_obstacle[1], msg.x - self.orbit_obstacle[0])
+            angle_traveled = abs(math.atan2(
+                math.sin(current_angle - self.orbit_start_angle),
+                math.cos(current_angle - self.orbit_start_angle)
+            ))
 
-            cmd.angular.z = 2.0 * angle_error
-            cmd.linear.x = -0.5 if abs(angle_error) < 0.5 else 0.0
-            self.publisher.publish(cmd)
+            if angle_traveled > math.pi / 3 and goal_dot > 0 and closest_distance > (closest_obstacle[2] + 1.2):
+                self.orbiting = False
+                self.orbit_obstacle = None
+
+        if closest_obstacle is not None and closest_distance < (closest_obstacle[2] + 0.75):
+            self.avoid_obstacle(msg=msg, cmd=cmd, closest_obstacle=closest_obstacle)
             return
+               
+
         
         if distance <= 0.2:
             cmd.linear.x = 0.0
             cmd.angular.z = 0.0
-            self.publisher.publish(cmd) # Skicka stopp-kommandot
+            self.publisher.publish(cmd) 
             self.get_logger().info(f'Goal reached! (x = {self.goal_x}, y = {self.goal_y})')
             self.done = True
             return
@@ -105,7 +120,47 @@ class Bot(Node):
             
     
             
+    def avoid_obstacle(self, msg, cmd, closest_obstacle):
+        ox, oy, radius = closest_obstacle
+
+
+        if not self.orbiting or self.orbit_obstacle != (ox, oy):
+            self.orbiting = True
+            self.orbit_obstacle = (ox, oy)
+            self.orbit_start_angle = math.atan2(msg.y - oy, msg.x - ox)
+
+        dx = msg.x - ox
+        dy = msg.y - oy
+
+        distance = math.sqrt(dx*dx + dy*dy)
         
+        normalizedx = dx / distance
+        normalizedy = dy / distance
+
+        tx = normalizedy
+        ty = -normalizedx
+
+
+        distance_obs = math.sqrt(dx * dx + dy * dy)
+
+
+        gx = self.goal_x - msg.x
+        gy = self.goal_y - msg.y
+        gdist = math.sqrt(gx*gx + gy*gy) or 1.0
+        gx, gy = gx / gdist, gy / gdist
+
+        danger = max(0.0, 1.0 - (distance_obs - radius) / 1.5)
+        steer_x = danger * tx + (1 - danger) * gx
+        steer_y = danger * ty + (1 - danger) * gy
+
+        target_angle = math.atan2(steer_y, steer_x)
+        angle_error = math.atan2(
+            math.sin(target_angle - msg.theta),
+            math.cos(target_angle - msg.theta)
+        )
+        cmd.angular.z = 2.5 * angle_error
+        cmd.linear.x = 0.5 if abs(angle_error) < 0.5 else 0.0
+        self.publisher.publish(cmd)
         
             
 

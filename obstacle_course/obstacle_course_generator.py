@@ -43,7 +43,7 @@ class ObstacleCourseGenerator(Node):
             distance_spawn = 0.0
             distance_goal = 0.0
            
-            while distance_spawn < 1.5 or distance_goal < 1.5:
+            while distance_spawn < 1.5 or distance_goal < 2.0:
                 x=random.uniform(1.0, 10.0)
                 y=random.uniform(1.0, 10.0)
                 distance_spawn = math.sqrt(((x - self.spawn_cords['x']) ** 2) + ((y - self.spawn_cords['y']) ** 2))
@@ -106,6 +106,7 @@ class ObstacleCourseGenerator(Node):
         req.x = x
         req.y = y
         req.theta = random.uniform(0.0, 360.0)
+
 
         future = self.client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)

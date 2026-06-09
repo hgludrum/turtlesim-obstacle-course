@@ -50,6 +50,11 @@ class Bot(Node):
         self.orbiting = False
         self.orbit_start_angle = None
         self.orbit_obstacle = None 
+        self.orbit_direction = 1
+        self.orbit_cumulative = 0.0
+        self.orbit_last_angle = None 
+
+        self.i = 0
 
 
     def pose_callback(self, msg: Pose):
@@ -59,39 +64,69 @@ class Bot(Node):
 
         cmd = Twist()
 
+
+        if self.i == 100:
+            self.get_logger().info(f'Pose: {msg}')
+            self.i = 0
+        else:
+            self.i += 1
+
+
         dx = msg.x - self.goal_x
         dy = msg.y - self.goal_y            
         distance = math.sqrt(dx*dx + dy*dy)
 
-        closest_obstacle = None
-        closest_distance = float('inf')
 
-        for obstacle in self.obstacles:
-            dx_obs = msg.x - obstacle[0]
-            dy_obs = msg.y - obstacle[1]
-            distance_obs = math.sqrt(dx_obs * dx_obs + dy_obs * dy_obs)
+        # for obstacle in self.obstacles:
+        #     dx_obs = msg.x - obstacle[0]
+        #     dy_obs = msg.y - obstacle[1]
+        #     distance_obs = math.sqrt(dx_obs * dx_obs + dy_obs * dy_obs)
 
-            if distance_obs < closest_distance:
-                closest_obstacle = obstacle
-                closest_distance = distance_obs
+        #     if distance_obs < closest_distance:
+        #         closest_obstacle = obstacle
+        #         closest_distance = distance_obs
 
-        if self.orbiting and self.orbit_obstacle is not None and self.orbit_start_angle is not None and closest_obstacle is not None:
+        closest, closest_dist = self._closest_obstacle(msg)
+
+
+        if self.orbiting and self.orbit_obstacle is not None:
+            ox, oy = self.orbit_obstacle
+            current_angle = math.atan2(msg.y - oy, msg.x - ox)
+            if self.orbit_last_angle is not None:
+                delta = math.atan2(
+                    math.sin(current_angle - self.orbit_last_angle),
+                    math.cos(current_angle - self.orbit_last_angle)
+                )
+                self.orbit_cumulative += abs(delta)
+            self.orbit_last_angle = current_angle
+        
+
+        if self.orbiting and self.orbit_obstacle is not None:
+            ox, oy = self.orbit_obstacle
             goal_dot = (
-                (msg.x - self.orbit_obstacle[0]) * (self.goal_x - self.orbit_obstacle[0]) +
-                (msg.y - self.orbit_obstacle[1]) * (self.goal_y - self.orbit_obstacle[1])
+                (msg.x - ox) * (self.goal_x - ox) +
+                (msg.y - oy) * (self.goal_y - oy)
             )
-            current_angle = math.atan2(msg.y - self.orbit_obstacle[1], msg.x - self.orbit_obstacle[0])
-            angle_traveled = abs(math.atan2(
-                math.sin(current_angle - self.orbit_start_angle),
-                math.cos(current_angle - self.orbit_start_angle)
-            ))
-
-            if angle_traveled > math.pi / 3 and goal_dot > 0 and closest_distance > (closest_obstacle[2] + 1.2):
+            clear = closest_dist > (closest[2] + 1.0) if closest else True
+            if self.orbit_cumulative > math.pi / 2 and goal_dot > 0 and clear:
                 self.orbiting = False
                 self.orbit_obstacle = None
+                self.orbit_last_angle = None
+                self.orbit_cumulative = 0.0
 
-        if closest_obstacle is not None and closest_distance < (closest_obstacle[2] + 0.75):
-            self.avoid_obstacle(msg=msg, cmd=cmd, closest_obstacle=closest_obstacle)
+        TRIGGER = 1.2
+        in_danger = closest is not None and closest_dist < (closest[2] + TRIGGER)
+
+        if in_danger and closest is not None:
+            ox, oy = closest[0], closest[1]
+            # Byt hinder BARA om vi inte redan orbiterar något
+            if not self.orbiting:
+                self.orbiting = True
+                self.orbit_obstacle = (ox, oy)
+                self.orbit_direction = self._choose_direction(msg, ox, oy)
+                self.orbit_cumulative = 0.0
+                self.orbit_last_angle = math.atan2(msg.y - oy, msg.x - ox)
+            self.avoid_obstacle(msg, cmd, closest, closest_dist)
             return
                
 
@@ -120,28 +155,21 @@ class Bot(Node):
             
     
             
-    def avoid_obstacle(self, msg, cmd, closest_obstacle):
-        ox, oy, radius = closest_obstacle
-
-
-        if not self.orbiting or self.orbit_obstacle != (ox, oy):
-            self.orbiting = True
-            self.orbit_obstacle = (ox, oy)
-            self.orbit_start_angle = math.atan2(msg.y - oy, msg.x - ox)
+    def avoid_obstacle(self, msg, cmd, obs, distance):
+        ox, oy, radius = obs
 
         dx = msg.x - ox
         dy = msg.y - oy
 
-        distance = math.sqrt(dx*dx + dy*dy)
-        
+        direction = self.orbit_direction        
+               
         normalizedx = dx / distance
         normalizedy = dy / distance
 
-        tx = normalizedy
-        ty = -normalizedx
+        tx = direction * normalizedy
+        ty = direction * -normalizedx
 
 
-        distance_obs = math.sqrt(dx * dx + dy * dy)
 
 
         gx = self.goal_x - msg.x
@@ -149,7 +177,7 @@ class Bot(Node):
         gdist = math.sqrt(gx*gx + gy*gy) or 1.0
         gx, gy = gx / gdist, gy / gdist
 
-        danger = max(0.0, 1.0 - (distance_obs - radius) / 1.5)
+        danger = max(0.0, 1.0 - (distance - radius) / 1.5)
         steer_x = danger * tx + (1 - danger) * gx
         steer_y = danger * ty + (1 - danger) * gy
 
@@ -163,7 +191,21 @@ class Bot(Node):
         self.publisher.publish(cmd)
         
             
-
+    def _closest_obstacle(self, msg):
+        best, best_dist = None, float('inf')
+        for obs in self.obstacles:
+            d = math.sqrt((msg.x - obs[0])**2 + (msg.y - obs[1])**2)
+            if d < best_dist:
+                best, best_dist = obs, d
+        return best, best_dist
+    
+    def _choose_direction(self, msg, ox, oy):
+        to_obs_x = ox - msg.x
+        to_obs_y = oy - msg.y
+        to_goal_x = self.goal_x - msg.x
+        to_goal_y = self.goal_y - msg.y
+        cross = to_obs_x * to_goal_y - to_obs_y * to_goal_x
+        return -1 if cross > 0 else 1
 
 
 def main():

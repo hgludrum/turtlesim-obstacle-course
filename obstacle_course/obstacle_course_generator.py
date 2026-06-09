@@ -43,7 +43,7 @@ class ObstacleCourseGenerator(Node):
             distance_spawn = 0.0
             distance_goal = 0.0
            
-            while distance_spawn < 1.5 or distance_goal < 2.0:
+            while distance_spawn < 2.0 or distance_goal < 2.0:
                 x=random.uniform(1.0, 10.0)
                 y=random.uniform(1.0, 10.0)
                 distance_spawn = math.sqrt(((x - self.spawn_cords['x']) ** 2) + ((y - self.spawn_cords['y']) ** 2))

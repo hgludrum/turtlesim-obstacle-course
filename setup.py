@@ -21,7 +21,7 @@ setup(
         'console_scripts': [
             'generate = obstacle_course.obstacle_course_generator:main',
             'bot = obstacle_course.bot:main',
-            'obstacle_course = obstacle_course.main:main'
+            'launch = obstacle_course.main:main'
         ],
     },
 )
